@@ -23,6 +23,22 @@ verwendet den OpenAI-kompatiblen Groq-Endpunkt mit `openai/gpt-oss-20b`.
 eingelesen. Bereits gesetzte Umgebungsvariablen haben Vorrang vor `.env`.
 Ein anderer OpenAI-kompatibler Endpunkt kann über diese Werte eingestellt werden.
 
+### Alternative: OpenRouter
+
+Falls Groq nicht verfügbar ist, kann stattdessen OpenRouter verwendet werden:
+
+```bash
+cp .env.openrouter.example .env
+```
+
+Anschließend einen eigenen Schlüssel unter
+[OpenRouter API Keys](https://openrouter.ai/settings/keys) erstellen und lokal in
+`.env` bei `OPENAI_API_KEY` eintragen. Die Vorlage nutzt `openrouter/free`.
+Dieser Router wählt kostenlose Modelle aus, die die angefragten Funktionen wie
+Werkzeugaufrufe unterstützen. Das tatsächlich verwendete Modell kann wechseln.
+Es gelten Nutzungslimits; ein Kalenderlauf benötigt zwei Modellanfragen.
+Der Python-Code bleibt bei diesem Anbieterwechsel unverändert.
+
 ### Ausführen
 
 ```bash
