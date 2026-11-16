@@ -96,6 +96,63 @@ class AgentTests(unittest.TestCase):
         self.assertFalse(entries[-1]["ok"])
         self.assertNotIn("final", [entry["event"] for entry in entries])
 
+    def test_tool_error_can_be_followed_by_success(self):
+        result = self.run_agent([
+            tool_call("2026-10-29"),
+            tool_call("2026-10-29", "call_2"),
+            {"role": "assistant", "content": "Abruf erfolgreich wiederholt"},
+        ], calendar=[RuntimeError("Vorübergehend nicht erreichbar"),
+                     {"date": "2026-10-29", "events": []}])
+        code, stdout, stderr, entries, model, reader = result
+        self.assertEqual(code, 0)
+        self.assertEqual(model.call_count, 3)
+        results = [entry for entry in entries if entry["event"] == "tool_result"]
+        self.assertEqual([entry["ok"] for entry in results], [False, True])
+        messages = model.call_args.args[1]
+        error = next(json.loads(message["content"]) for message in messages
+                     if message["role"] == "tool")
+        self.assertIn("Vorübergehend", error["error"])
+        self.assertEqual(entries[-1]["event"], "final")
+
+    def test_invalid_arguments_can_be_corrected(self):
+        invalid = tool_call("2026-10-29")
+        invalid["tool_calls"][0]["function"]["arguments"] = '{"date":'
+        result = self.run_agent([
+            invalid, tool_call("2026-10-29", "call_2"),
+            {"role": "assistant", "content": "Korrigierter Abruf"},
+        ])
+        code, stdout, stderr, entries, model, reader = result
+        self.assertEqual(code, 0)
+        self.assertEqual(reader.call_count, 1)
+        results = [entry for entry in entries if entry["event"] == "tool_result"]
+        self.assertEqual([entry["ok"] for entry in results], [False, True])
+        self.assertEqual(entries[-1]["event"], "final")
+
+    def test_model_error_consumes_one_step_and_can_recover(self):
+        result = self.run_agent([
+            RuntimeError("Vorübergehender Modellfehler"), tool_call("2026-10-29"),
+            {"role": "assistant", "content": "Antwort nach erneutem Versuch"},
+        ], max_steps=3)
+        code, stdout, stderr, entries, model, reader = result
+        self.assertEqual(code, 0)
+        self.assertEqual(model.call_count, 3)
+        self.assertEqual(entries[1]["event"], "error")
+        self.assertEqual(entries[1]["stage"], "model")
+        self.assertEqual(entries[1]["step"], 1)
+        self.assertEqual(entries[-1]["event"], "final")
+        self.assertEqual(entries[-1]["step"], 3)
+
+    def test_missing_data_does_not_prevent_other_days(self):
+        result = self.run_agent([
+            tool_call("2026-12-01"), tool_call("2026-10-29", "call_2"),
+            {"role": "assistant", "content": "Fehlende Daten und anderer Tag"},
+        ], calendar=[{"date": "2026-12-01", "no_data": True},
+                     {"date": "2026-10-29", "events": []}])
+        code, stdout, stderr, entries, model, reader = result
+        self.assertEqual(code, 0)
+        self.assertEqual(reader.call_count, 2)
+        self.assertEqual(entries[-1]["event"], "final")
+
 
 if __name__ == "__main__":
     unittest.main()
