@@ -1,0 +1,74 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Blatt 1: ein Tag",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "agent",
+      "args": ["Was steht am 29.10.2026 im Kalender?"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Blatt 3: zwei Tage",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "agent",
+      "args": ["Was steht am 29.10.2026 und am 30.10.2026 im Kalender?"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Blatt 3: Schrittlimit (MAX_STEPS=1)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "agent",
+      "args": ["Was steht am 29.10.2026 und am 30.10.2026 im Kalender?"],
+      "env": { "MAX_STEPS": "1" },
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Blatt 4: München + Regenschirm",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "agent",
+      "args": ["Wie komme ich am 29.10.2026 nach München, und brauche ich einen Regenschirm?"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Blatt 4: Ort ohne Daten (Berlin)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "agent",
+      "args": ["Wie ist das Wetter am 29.10.2026 in Berlin?"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Eigene Frage",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "agent",
+      "args": ["${input:frage}"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ],
+  "inputs": [
+    {
+      "id": "frage",
+      "type": "promptString",
+      "description": "Frage an den Agenten",
+      "default": "Was steht am 02.11.2026 an und wie wird das Wetter in Ulm?"
+    }
+  ]
+}

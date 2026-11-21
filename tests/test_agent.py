@@ -1,3 +1,5 @@
+"""Tests für einen ganzen Lauf – Modell und Datenserver werden simuliert."""
+
 import io
 import json
 import os
@@ -7,151 +9,158 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from agent import __main__ as agent
+from openai import APIConnectionError
+from openai.types.chat import ChatCompletionMessage
+
+from agent import __main__ as main_module
+from agent import config, loop, tools
 
 
-def tool_call(day, call_id="call_1"):
-    return {
+def wants_tools(*calls):
+    """Antwort des Modells mit Werkzeugaufrufen, z. B. ("calendar", {"date": "…"})."""
+    return ChatCompletionMessage.model_validate({
         "role": "assistant",
         "content": None,
-        "tool_calls": [{
-            "id": call_id,
-            "type": "function",
-            "function": {"name": "calendar", "arguments": json.dumps({"date": day})},
-        }],
-    }
+        "tool_calls": [
+            {"id": f"call_{i}", "type": "function",
+             "function": {"name": name, "arguments": json.dumps(args)}}
+            for i, (name, args) in enumerate(calls)
+        ],
+    })
 
 
-class AgentTests(unittest.TestCase):
-    def run_agent(self, responses, max_steps=10, calendar=None):
-        # Die Tests laufen ohne Netzwerk, Zugangsdaten oder Änderungen an echten Logs.
+def answers(text):
+    """Abschließende Antwort des Modells."""
+    return ChatCompletionMessage(role="assistant", content=text)
+
+
+def fake_data(base_url, path):
+    """Simulierter Datenserver: nur diese Pfade gibt es, alles andere ist 404 (None)."""
+    return {
+        "calendar/2026-10-29.json": {"date": "2026-10-29", "events": [{"title": "Standup"}]},
+        "calendar/2026-10-30.json": {"date": "2026-10-30", "events": []},
+        "weather/muenchen/2026-10-29.json": {"condition": "Schauer", "rain_probability": 0.6},
+        "transit/ulm/muenchen/2026-10-29.json": {"connections": [{"train": "ICE 594"}]},
+    }.get(path)
+
+
+class AgentRunTests(unittest.TestCase):
+    def run_agent(self, model_replies, env=None):
+        environment = {
+            "OPENAI_BASE_URL": "http://model.invalid/v1",
+            "MODEL": "test-model",
+            "OPENAI_API_KEY": "test-key",
+            "DATA_BASE_URL": "http://data.invalid/v1",
+            "MAX_STEPS": "10",
+            **(env or {}),
+        }
         with tempfile.TemporaryDirectory() as folder:
             stdout, stderr = io.StringIO(), io.StringIO()
-            config = {
-                "OPENAI_BASE_URL": "http://test.invalid/v1",
-                "MODEL": "test-model",
-                "OPENAI_API_KEY": "test-key",
-                "DATA_BASE_URL": "http://data.invalid/v1",
-                "MAX_STEPS": str(max_steps),
-            }
             with (
-                patch.object(agent, "ROOT", Path(folder)),
-                patch.dict(os.environ, config, clear=True),
-                patch("sys.argv", ["agent", "Kalenderfrage"]),
-                patch.object(agent, "call_model", side_effect=responses) as model,
-                patch.object(agent, "read_calendar", side_effect=calendar or (
-                    lambda base, day: {"date": day, "events": []}
-                )) as reader,
+                patch.dict(os.environ, environment, clear=True),
+                patch.object(config, "ENV_FILE", Path(folder) / "keine.env"),
+                patch.object(main_module, "LOG_DIR", Path(folder)),
+                patch.object(loop, "call_model", side_effect=model_replies) as model,
+                patch.object(tools, "fetch_json", side_effect=fake_data),
+                patch("sys.argv", ["agent", "Testfrage"]),
                 redirect_stdout(stdout),
                 redirect_stderr(stderr),
             ):
-                exit_code = agent.main()
-            paths = list((Path(folder) / "logs").glob("*.jsonl"))
-            self.assertEqual(len(paths), 1)
-            entries = [json.loads(line) for line in paths[0].read_text().splitlines()]
-            return exit_code, stdout.getvalue(), stderr.getvalue(), entries, model, reader
+                exit_code = main_module.main()
+            log_file, = Path(folder).glob("*.jsonl")
+            log = [json.loads(line) for line in log_file.read_text().splitlines()]
+        self.model = model
+        return exit_code, stdout.getvalue().strip(), stderr.getvalue(), log
 
-    def test_single_day_still_works(self):
-        result = self.run_agent([
-            tool_call("2026-10-29"),
-            {"role": "assistant", "content": "Antwort zum Tag"},
+    def results(self, log):
+        return [entry for entry in log if entry["event"] == "tool_result"]
+
+    # --- Übung 1: ein Werkzeugaufruf ---------------------------------------
+
+    def test_single_day(self):
+        code, out, err, log = self.run_agent([
+            wants_tools(("calendar", {"date": "2026-10-29"})),
+            answers("Am 29.10. ist Standup."),
         ])
-        code, stdout, stderr, entries, model, reader = result
-        self.assertEqual((code, stdout.strip(), stderr), (0, "Antwort zum Tag", ""))
-        self.assertEqual(model.call_count, 2)
-        reader.assert_called_once_with("http://data.invalid/v1", "2026-10-29")
-        self.assertEqual(entries[-1]["event"], "final")
+        self.assertEqual((code, out, err), (0, "Am 29.10. ist Standup.", ""))
+        self.assertEqual([e["event"] for e in log],
+                         ["user_task", "tool_call", "tool_result", "final"])
+        self.assertEqual(log[2]["result"]["events"], [{"title": "Standup"}])
+        self.assertTrue(all(e["model"] == "test-model" for e in log))
+        # Erst muss ein Werkzeug aufgerufen werden, danach darf das Modell antworten.
+        self.assertEqual([c.kwargs["force_tool"] for c in self.model.call_args_list],
+                         [True, False])
 
-    def test_multiple_days_finish_on_last_allowed_step(self):
-        result = self.run_agent([
-            tool_call("2026-10-29"),
-            tool_call("2026-10-30", "call_2"),
-            {"role": "assistant", "content": "Antwort zu beiden Tagen"},
-        ], max_steps=3)
-        code, stdout, stderr, entries, model, reader = result
+    # --- Übung 3: mehrere Schritte, Ende, Fehler unterwegs ------------------
+
+    def test_two_days_in_two_steps(self):
+        code, out, _, log = self.run_agent([
+            wants_tools(("calendar", {"date": "2026-10-29"})),
+            wants_tools(("calendar", {"date": "2026-10-30"})),
+            answers("Beide Tage"),
+        ], env={"MAX_STEPS": "3"})
         self.assertEqual(code, 0)
-        self.assertEqual(stderr, "")
-        self.assertEqual(model.call_count, 3)
-        self.assertEqual([call.args[1] for call in reader.call_args_list],
-                         ["2026-10-29", "2026-10-30"])
-        self.assertEqual(entries[-1]["event"], "final")
-        self.assertEqual(entries[-1]["step"], 3)
-        messages = model.call_args.args[1]
-        results = [json.loads(message["content"]) for message in messages
-                   if message["role"] == "tool"]
-        self.assertEqual([result["date"] for result in results],
-                         ["2026-10-29", "2026-10-30"])
+        self.assertEqual(log[-1]["event"], "final")
+        self.assertEqual(log[-1]["step"], 3)
+        # Das Modell bekommt im letzten Schritt beide Ergebnisse im Verlauf.
+        history = self.model.call_args.args[2]
+        self.assertEqual(len([m for m in history if m["role"] == "tool"]), 2)
 
     def test_step_limit_is_an_error(self):
-        result = self.run_agent([
-            tool_call("2026-10-29"), tool_call("2026-10-30", "call_2")
-        ], max_steps=2)
-        code, stdout, stderr, entries, model, reader = result
-        self.assertEqual(code, 1)
-        self.assertEqual(stdout, "")
-        self.assertIn("Schrittlimit", stderr)
-        self.assertEqual(model.call_count, 2)
-        self.assertEqual(entries[-1]["event"], "error")
-        self.assertEqual(entries[-1]["reason"], "step_limit")
-        self.assertFalse(entries[-1]["ok"])
-        self.assertNotIn("final", [entry["event"] for entry in entries])
+        code, out, err, log = self.run_agent([
+            wants_tools(("calendar", {"date": "2026-10-29"})),
+        ], env={"MAX_STEPS": "1"})
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("Schrittlimit", err)
+        self.assertEqual(log[-1]["event"], "error")
+        self.assertEqual(log[-1]["reason"], "step_limit")
+        self.assertFalse(log[-1]["ok"])
 
-    def test_tool_error_can_be_followed_by_success(self):
-        result = self.run_agent([
-            tool_call("2026-10-29"),
-            tool_call("2026-10-29", "call_2"),
-            {"role": "assistant", "content": "Abruf erfolgreich wiederholt"},
-        ], calendar=[RuntimeError("Vorübergehend nicht erreichbar"),
-                     {"date": "2026-10-29", "events": []}])
-        code, stdout, stderr, entries, model, reader = result
-        self.assertEqual(code, 0)
-        self.assertEqual(model.call_count, 3)
-        results = [entry for entry in entries if entry["event"] == "tool_result"]
-        self.assertEqual([entry["ok"] for entry in results], [False, True])
-        messages = model.call_args.args[1]
-        error = next(json.loads(message["content"]) for message in messages
-                     if message["role"] == "tool")
-        self.assertIn("Vorübergehend", error["error"])
-        self.assertEqual(entries[-1]["event"], "final")
-
-    def test_invalid_arguments_can_be_corrected(self):
-        invalid = tool_call("2026-10-29")
-        invalid["tool_calls"][0]["function"]["arguments"] = '{"date":'
-        result = self.run_agent([
-            invalid, tool_call("2026-10-29", "call_2"),
-            {"role": "assistant", "content": "Korrigierter Abruf"},
+    def test_tool_error_lets_model_correct_itself(self):
+        code, _, _, log = self.run_agent([
+            wants_tools(("calendar", {"date": "29.10.2026"})),   # falsches Format
+            wants_tools(("calendar", {"date": "2026-10-29"})),
+            answers("Korrigiert"),
         ])
-        code, stdout, stderr, entries, model, reader = result
         self.assertEqual(code, 0)
-        self.assertEqual(reader.call_count, 1)
-        results = [entry for entry in entries if entry["event"] == "tool_result"]
-        self.assertEqual([entry["ok"] for entry in results], [False, True])
-        self.assertEqual(entries[-1]["event"], "final")
+        self.assertEqual([e["ok"] for e in self.results(log)], [False, True])
 
-    def test_model_error_consumes_one_step_and_can_recover(self):
-        result = self.run_agent([
-            RuntimeError("Vorübergehender Modellfehler"), tool_call("2026-10-29"),
-            {"role": "assistant", "content": "Antwort nach erneutem Versuch"},
-        ], max_steps=3)
-        code, stdout, stderr, entries, model, reader = result
+    def test_model_error_costs_one_step_and_run_continues(self):
+        code, _, _, log = self.run_agent([
+            APIConnectionError(request=None),
+            wants_tools(("calendar", {"date": "2026-10-29"})),
+            answers("Trotzdem fertig"),
+        ])
         self.assertEqual(code, 0)
-        self.assertEqual(model.call_count, 3)
-        self.assertEqual(entries[1]["event"], "error")
-        self.assertEqual(entries[1]["stage"], "model")
-        self.assertEqual(entries[1]["step"], 1)
-        self.assertEqual(entries[-1]["event"], "final")
-        self.assertEqual(entries[-1]["step"], 3)
+        self.assertEqual((log[1]["event"], log[1]["stage"], log[1]["step"]), ("error", "model", 1))
+        self.assertEqual(log[-1]["step"], 3)
 
-    def test_missing_data_does_not_prevent_other_days(self):
-        result = self.run_agent([
-            tool_call("2026-12-01"), tool_call("2026-10-29", "call_2"),
-            {"role": "assistant", "content": "Fehlende Daten und anderer Tag"},
-        ], calendar=[{"date": "2026-12-01", "no_data": True},
-                     {"date": "2026-10-29", "events": []}])
-        code, stdout, stderr, entries, model, reader = result
+    def test_missing_config_ends_as_error(self):
+        code, _, err, log = self.run_agent([], env={"OPENAI_API_KEY": ""})
+        self.assertEqual(code, 1)
+        self.assertIn("OPENAI_API_KEY", err)
+        self.assertEqual(log[-1]["reason"], "config")
+
+    # --- Übung 4: zwei neue Werkzeuge, Lücken -------------------------------
+
+    def test_weather_and_connections_in_one_run(self):
+        code, out, _, log = self.run_agent([
+            wants_tools(("connections", {"from_city": "ulm", "to_city": "muenchen",
+                                         "date": "2026-10-29"}),
+                        ("weather", {"city": "muenchen", "date": "2026-10-29"})),
+            answers("ICE 594, Schirm mitnehmen"),
+        ])
         self.assertEqual(code, 0)
-        self.assertEqual(reader.call_count, 2)
-        self.assertEqual(entries[-1]["event"], "final")
+        self.assertEqual([e["tool"] for e in self.results(log)], ["connections", "weather"])
+        self.assertTrue(all(e["ok"] for e in self.results(log)))
+
+    def test_place_without_data_returns_no_data(self):
+        code, _, _, log = self.run_agent([
+            wants_tools(("weather", {"city": "berlin", "date": "2026-10-29"})),
+            answers("Für Berlin gibt es keine Wetterdaten."),
+        ])
+        self.assertEqual(code, 0)
+        self.assertTrue(self.results(log)[0]["result"]["no_data"])
 
 
 if __name__ == "__main__":
