@@ -19,19 +19,22 @@ class RunLog:
         folder.mkdir(exist_ok=True)
         self.run_id = uuid4().hex
         self.path = folder / f"{self.run_id}.jsonl"
-        self.model = None  # wird gesetzt, sobald die Konfiguration gelesen ist
+        self.model = None      # beide werden gesetzt, sobald die Konfiguration gelesen ist
+        self.condition = None  # preview oder direct
 
     def write(self, event, *, tool=None, args=None, ok=True, duration_ms=0, **extra):
         """Schreibt eine Zeile. Die Pflichtfelder stehen immer drin, `extra` kommt dazu."""
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "run_id": self.run_id,
-            "event": event,  # user_task, tool_call, tool_result, final, error
+            "event": event,  # user_task, tool_call, tool_result, final, error,
+                             # approval_request, approval_granted, approval_denied
             "tool": tool,
             "args": args,
             "ok": ok,
             "model": self.model,
             "duration_ms": duration_ms,
+            "condition": self.condition,
             **extra,
         }
         with self.path.open("a", encoding="utf-8") as file:

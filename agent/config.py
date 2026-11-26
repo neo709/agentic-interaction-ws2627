@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 DEFAULT_MAX_STEPS = 10
+CONDITIONS = ("preview", "direct")
 
 
 class ConfigError(Exception):
@@ -21,6 +22,8 @@ class Config:
     api_key: str         # OPENAI_API_KEY
     data_base_url: str   # DATA_BASE_URL – Mock-Daten
     max_steps: int       # MAX_STEPS – höchstens so viele Modellaufrufe pro Lauf
+    condition: str       # CONDITION – "preview" (erst fragen) oder "direct" (ausführen, dann berichten)
+    auto_approve: bool   # AUTO_APPROVE=1 – in preview ohne Nachfrage freigeben
 
 
 def load_config() -> Config:
@@ -37,10 +40,16 @@ def load_config() -> Config:
     if not max_steps.isdigit() or int(max_steps) < 1:
         raise ConfigError("MAX_STEPS muss eine positive ganze Zahl sein.")
 
+    condition = os.environ.get("CONDITION", "").strip()
+    if condition not in CONDITIONS:
+        raise ConfigError("CONDITION muss 'preview' oder 'direct' sein.")
+
     return Config(
         base_url=values["OPENAI_BASE_URL"],
         model=values["MODEL"],
         api_key=values["OPENAI_API_KEY"],
         data_base_url=values["DATA_BASE_URL"],
         max_steps=int(max_steps),
+        condition=condition,
+        auto_approve=os.environ.get("AUTO_APPROVE", "").strip() == "1",
     )

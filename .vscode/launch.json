@@ -7,6 +7,7 @@
       "request": "launch",
       "module": "agent",
       "args": ["Was steht am 29.10.2026 im Kalender?"],
+      "env": { "CONDITION": "direct" },
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "justMyCode": true
@@ -17,6 +18,7 @@
       "request": "launch",
       "module": "agent",
       "args": ["Was steht am 29.10.2026 und am 30.10.2026 im Kalender?"],
+      "env": { "CONDITION": "direct" },
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "justMyCode": true
@@ -27,7 +29,7 @@
       "request": "launch",
       "module": "agent",
       "args": ["Was steht am 29.10.2026 und am 30.10.2026 im Kalender?"],
-      "env": { "MAX_STEPS": "1" },
+      "env": { "CONDITION": "direct", "MAX_STEPS": "1" },
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "justMyCode": true
@@ -38,6 +40,7 @@
       "request": "launch",
       "module": "agent",
       "args": ["Wie komme ich am 29.10.2026 nach München, und brauche ich einen Regenschirm?"],
+      "env": { "CONDITION": "direct" },
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "justMyCode": true
@@ -48,6 +51,29 @@
       "request": "launch",
       "module": "agent",
       "args": ["Wie ist das Wetter am 29.10.2026 in Berlin?"],
+      "env": { "CONDITION": "direct" },
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Blatt 5: Puffer anlegen (preview, fragt nach)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "agent",
+      "args": ["Blocke mir am 29.10.2026 um 17:00 eine Stunde Puffer."],
+      "env": { "CONDITION": "preview" },
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Blatt 5: Puffer anlegen (direct)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "agent",
+      "args": ["Blocke mir am 29.10.2026 um 17:00 eine Stunde Puffer."],
+      "env": { "CONDITION": "direct" },
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "justMyCode": true
@@ -58,6 +84,7 @@
       "request": "launch",
       "module": "agent",
       "args": ["${input:frage}"],
+      "env": { "CONDITION": "${input:condition}" },
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "justMyCode": true
@@ -69,6 +96,13 @@
       "type": "promptString",
       "description": "Frage an den Agenten",
       "default": "Was steht am 02.11.2026 an und wie wird das Wetter in Ulm?"
+    },
+    {
+      "id": "condition",
+      "type": "pickString",
+      "description": "Bedingung",
+      "options": ["preview", "direct"],
+      "default": "preview"
     }
   ]
 }

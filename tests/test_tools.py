@@ -16,13 +16,29 @@ class ToolTests(unittest.TestCase):
         self.assertEqual((result, ok), ({"events": []}, True))
 
     def test_weather_and_connections_build_urls(self):
-        with patch.object(tools, "fetch_json", return_value={}) as fetch:
+        with patch.object(tools, "fetch_json", side_effect=self.server) as fetch:
             tools.run_tool("weather", {"city": "muenchen", "date": "2026-10-29"}, BASE)
             tools.run_tool("connections", {"from_city": "ulm", "to_city": "muenchen",
                                            "date": "2026-10-29"}, BASE)
-        self.assertEqual([call.args[1] for call in fetch.call_args_list],
-                         ["weather/muenchen/2026-10-29.json",
-                          "transit/ulm/muenchen/2026-10-29.json"])
+        data_paths = [c.args[1] for c in fetch.call_args_list if c.args[1] != "index.json"]
+        self.assertEqual(data_paths, ["weather/muenchen/2026-10-29.json",
+                                      "transit/ulm/muenchen/2026-10-29.json"])
+
+    def test_unknown_city_returns_known_cities(self):
+        args = {"city": "munich", "date": "2026-10-29"}
+        with patch.object(tools, "fetch_json", side_effect=self.server) as fetch:
+            result, ok = tools.run_tool("weather", args, BASE)
+        self.assertTrue(ok)
+        self.assertTrue(result["no_data"])
+        self.assertIn("muenchen", result["known_cities"])
+        fetch.assert_called_once_with(BASE, "index.json")  # Wetter gar nicht erst abgefragt
+
+    @staticmethod
+    def server(base_url, path):
+        """Simulierter Datenserver mit Städteliste."""
+        if path == "index.json":
+            return {"cities": {"ulm": "Ulm", "muenchen": "München"}}
+        return {}
 
     def test_missing_data_is_a_result_not_an_error(self):
         with patch.object(tools, "fetch_json", return_value=None):
@@ -37,6 +53,10 @@ class ToolTests(unittest.TestCase):
             ("calendar", {"day": "2026-10-29"}),            # falscher Parametername
             ("calendar", '{"date":'),                       # kaputtes JSON
             ("flights", {"date": "2026-10-29"}),            # unbekanntes Werkzeug
+            ("create_event", {"date": "2026-10-29", "start": "18:00",  # Ende vor Beginn
+                              "end": "17:00", "title": "Puffer"}),
+            ("create_event", {"date": "2026-10-29", "start": "5 Uhr",  # falsche Uhrzeit
+                              "end": "18:00", "title": "Puffer"}),
         ]
         with patch.object(tools, "fetch_json") as fetch:
             for name, args in cases:

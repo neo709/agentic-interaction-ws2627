@@ -8,8 +8,13 @@ Jedes Werkzeug besteht aus zwei Teilen:
 import json
 import re
 from datetime import date as Date
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
+from uuid import uuid4
+
+# Hierhin schreibt create_event. Die Mock-Daten auf dem Server bleiben unverändert.
+EVENTS_FILE = Path(__file__).resolve().parent.parent / "var" / "calendar.jsonl"
 
 
 class ToolError(Exception):
@@ -54,6 +59,12 @@ def check_city(value) -> str:
     raise ToolError(f"Ungültiges Stadtkürzel {value!r}, erwartet z. B. 'ulm' oder 'muenchen'.")
 
 
+def check_time(value) -> str:
+    if isinstance(value, str) and re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", value):
+        return value
+    raise ToolError(f"Ungültige Uhrzeit {value!r}, erwartet wird HH:MM.")
+
+
 # --- Die Werkzeuge -----------------------------------------------------------
 
 def calendar(base_url: str, date: str) -> dict:
@@ -62,14 +73,36 @@ def calendar(base_url: str, date: str) -> dict:
     return data if data is not None else no_data(f"den Kalender am {date}")
 
 
+def unknown_city(base_url: str, *cities: str):
+    """Prüft die Städte gegen die Liste in index.json.
+
+    Kennt die Datenquelle eine Stadt nicht (z. B. 'munich' statt 'muenchen' oder 'berlin'),
+    kommt no_data mit der Liste der bekannten Städte zurück – damit kann sich das Modell
+    selbst korrigieren. Sonst None.
+    """
+    index = fetch_json(base_url, "index.json") or {}
+    known = index.get("cities")  # z. B. {"ulm": "Ulm", "muenchen": "München"}
+    if not known:
+        return None  # keine Liste verfügbar → nicht prüfen
+    for city in cities:
+        if city not in known:
+            return {"no_data": True, "message": f"Keine Daten für die Stadt {city!r}.",
+                    "known_cities": known}
+    return None
+
+
 def weather(base_url: str, city: str, date: str) -> dict:
     city, date = check_city(city), check_date(date)
+    if missing := unknown_city(base_url, city):
+        return missing
     data = fetch_json(base_url, f"weather/{city}/{date}.json")
     return data if data is not None else no_data(f"das Wetter in {city} am {date}")
 
 
 def connections(base_url: str, from_city: str, to_city: str, date: str) -> dict:
     from_city, to_city, date = check_city(from_city), check_city(to_city), check_date(date)
+    if missing := unknown_city(base_url, from_city, to_city):
+        return missing
     data = fetch_json(base_url, f"transit/{from_city}/{to_city}/{date}.json")
     return data if data is not None else no_data(f"Verbindungen {from_city} → {to_city} am {date}")
 
@@ -79,12 +112,34 @@ def context(base_url: str) -> dict:
     return data if data is not None else no_data("den Kontext")
 
 
+def create_event(base_url: str, date: str, start: str, end: str, title: str) -> dict:
+    """Legt einen Termin an: eine JSON-Zeile in var/calendar.jsonl (base_url wird nicht gebraucht)."""
+    date, start, end = check_date(date), check_time(start), check_time(end)
+    if end <= start:
+        raise ToolError("Das Ende muss nach dem Beginn liegen.")
+    if not isinstance(title, str) or not title.strip():
+        raise ToolError("Der Titel darf nicht leer sein.")
+
+    # Gleiche Felder wie die Termine in den Mock-Daten.
+    event = {"id": f"local-{uuid4().hex[:8]}", "date": date, "start": start, "end": end,
+             "all_day": False, "title": title.strip(), "location": None}
+    EVENTS_FILE.parent.mkdir(exist_ok=True)
+    with EVENTS_FILE.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(event, ensure_ascii=False) + "\n")
+    return {"created": True, "event": event}
+
+
 TOOL_FUNCTIONS = {
     "calendar": calendar,
     "weather": weather,
     "connections": connections,
     "context": context,
+    "create_event": create_event,
 }
+
+# Die einzige Stelle, die festlegt, welche Werkzeuge etwas Unumkehrbares tun.
+# Nur für diese Werkzeuge fragt der Agent in CONDITION=preview um Erlaubnis.
+IRREVERSIBLE_TOOLS = {"create_event"}
 
 
 # --- Beschreibungen für das Modell -------------------------------------------
@@ -107,8 +162,10 @@ def describe(name: str, description: str, **parameters) -> dict:
 
 
 DATE = {"type": "string", "description": "Datum im Format YYYY-MM-DD"}
-CITY = {"type": "string", "description": "Stadtname klein und ohne Umlaute, z. B. ulm, "
-        "muenchen. Jede Stadt ist erlaubt; ohne Daten kommt no_data zurück."}
+TIME = {"type": "string", "description": "Uhrzeit im Format HH:MM"}
+CITY = {"type": "string", "description": "Stadtkürzel wie in den Daten: deutscher Name, "
+        "klein, Umlaute als ae/oe/ue – z. B. ulm, muenchen. Bei unbekannter Stadt kommt "
+        "no_data mit der Liste known_cities zurück."}
 
 TOOL_SCHEMAS = [
     describe("calendar", "Liest alle Termine eines Tages aus dem Kalender.",
@@ -119,10 +176,19 @@ TOOL_SCHEMAS = [
     describe("connections", "Sucht Zugverbindungen zwischen zwei Städten an einem Tag "
              "(Abfahrt, Ankunft, Zug, Umstiege, Preis).",
              from_city=CITY, to_city=CITY, date=DATE),
+    describe("create_event", "Legt einen neuen Termin im Kalender an.",
+             date=DATE, start=TIME, end=TIME,
+             title={"type": "string", "description": "Titel des Termins"}),
     describe("context", "Liest die aktuelle Situation der Nutzerin oder des Nutzers: "
              "jetziger Zeitpunkt (now), Wohnort (home) und Hinweise. Nutzen, wenn in der "
              "Frage Startort oder Datum fehlen, z. B. bei 'heute' oder 'nach München'."),
 ]
+
+# Parameter je Werkzeug in der Reihenfolge der Beschreibung, z. B. date, start, end, title.
+# Damit zeigt der Freigabedialog die Argumente lesbar an, egal in welcher Reihenfolge
+# das Modell sie schickt.
+PARAMETER_ORDER = {schema["function"]["name"]: list(schema["function"]["parameters"]["properties"])
+                   for schema in TOOL_SCHEMAS}
 
 
 # --- Einen Aufruf des Modells ausführen --------------------------------------
